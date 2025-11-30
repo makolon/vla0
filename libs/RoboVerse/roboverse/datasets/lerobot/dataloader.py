@@ -10,9 +10,6 @@ from functools import cache
 import numpy as np
 import torch
 from einops import rearrange
-from lerobot.common.datasets.lerobot_dataset import (LeRobotDataset,
-                                                     LeRobotDatasetMetadata,
-                                                     MultiLeRobotDataset)
 from roboverse import constants as c
 from torch.utils.data import Dataset
 
@@ -20,6 +17,41 @@ from rv_train.utils.train_utils import ForkedPdb as debug  # noqa: F401
 
 logging.getLogger().setLevel(logging.ERROR)
 warnings.filterwarnings("ignore")
+
+# Version compatibility layer for LeRobot
+# LeRobot v0.1.0 (codebase v2.1): lerobot.common.datasets.lerobot_dataset
+# LeRobot v0.4.x (codebase v3.0): lerobot.datasets.lerobot_dataset
+try:
+    # Try new import path first (LeRobot >= 0.4.0, codebase v3.0)
+    from lerobot.datasets.lerobot_dataset import (LeRobotDataset,
+                                                  LeRobotDatasetMetadata,
+                                                  MultiLeRobotDataset)
+
+    LEROBOT_V3 = True
+except ImportError:
+    # Fall back to old import path (LeRobot 0.1.0, codebase v2.1)
+    from lerobot.common.datasets.lerobot_dataset import (
+        LeRobotDataset, LeRobotDatasetMetadata, MultiLeRobotDataset)
+
+    LEROBOT_V3 = False
+
+
+def get_lerobot_version():
+    """Get the installed LeRobot version string."""
+    try:
+        from lerobot import __version__
+
+        return __version__
+    except ImportError:
+        return "unknown"
+
+
+def is_lerobot_v3():
+    """Check if LeRobot is v3.0+ (codebase version, not package version)."""
+    return LEROBOT_V3
+
+
+print(f"LeRobot version: {get_lerobot_version()}, using v3.0 API: {LEROBOT_V3}")
 
 
 @cache
@@ -32,7 +64,6 @@ def get_lerobot_metadata(repo_id):
     return LeRobotDatasetMetadata(repo_id=repo_id)
 
 
-@cache
 def get_final_le_cam_list_rv_cam_list(metadata, le_cam_list, rv_cam_list):
     """
     This is a helper function that is used to get the final le_cam_list and rv_cam_list used in the dataset.
@@ -43,9 +74,13 @@ def get_final_le_cam_list_rv_cam_list(metadata, le_cam_list, rv_cam_list):
     :param le_cam_list: (list) List of le robot camera names to be used as input. Similar to the one provided in LeRobotRV.__init__. Could be None.
     :param rv_cam_list: (list) Corresponding list of camera names in roboverse to be used as input. Similar to the one provided in LeRobotRV.__init__. Could be None.
     """
+    # Convert to tuple for caching if needed, convert back to list for compatibility
     if le_cam_list is None:
-        le_cam_list = metadata.camera_keys
+        le_cam_list = list(metadata.camera_keys)
     else:
+        le_cam_list = (
+            list(le_cam_list) if not isinstance(le_cam_list, list) else le_cam_list
+        )
         print(f"le_cam_list: {le_cam_list}")
         print(f"metadata.camera_keys: {metadata.camera_keys}")
         for _cam in le_cam_list:
@@ -54,6 +89,9 @@ def get_final_le_cam_list_rv_cam_list(metadata, le_cam_list, rv_cam_list):
     if rv_cam_list is None:
         rv_cam_list = c.CAMERA_NAMES[: len(le_cam_list)]
     else:
+        rv_cam_list = (
+            list(rv_cam_list) if not isinstance(rv_cam_list, list) else rv_cam_list
+        )
         for _cam in rv_cam_list:
             assert (
                 _cam in c.CAMERA_NAMES
@@ -259,8 +297,12 @@ class LeRobotRV(Dataset):
         Fix episode_data_index mapping when episodes are filtered in LeRobotDataset.
         Uses the same approach as PR #1062: https://github.com/huggingface/lerobot/pull/1062/files
 
-        THE PROBLEM:
-        ------------
+        NOTE: This fix is only needed for LeRobot v2.x (codebase v2.1).
+        LeRobot v3.0+ uses a different episode indexing approach that handles
+        filtered episodes correctly via _absolute_to_relative_idx mapping.
+
+        THE PROBLEM (v2.x only):
+        ------------------------
         LeRobotDataset has a critical bug when filtering episodes. Here's what happens:
 
         1. EPISODE FILTERING: When episodes=[10, 25, 428, 512] is passed, LeRobotDataset:
@@ -287,23 +329,13 @@ class LeRobotRV(Dataset):
         2. Set length = 0 for episodes NOT in the filtered list
         3. Set length = actual_length for episodes in the filtered list
         4. Use cumulative sum to create proper from/to arrays
-
-        EXAMPLE:
-        --------
-        Original dataset has episodes 0-999, we filter to episodes [10, 25, 428, 512]:
-
-        BEFORE FIX:
-        - episode_data_index["from"] has 4 elements: [0, 150, 300, 450]
-        - When accessing episode 428: episode_data_index["from"][428] → IndexError!
-
-        AFTER FIX (PR #1062 approach):
-        - episode_data_index["from"] has 1000 elements: [0, 0, 0, ..., 0, 150, 0, ..., 300, ...]
-        - episode_data_index["from"][10] = 0      ✓
-        - episode_data_index["from"][25] = 150    ✓
-        - episode_data_index["from"][428] = 300   ✓
-        - episode_data_index["from"][512] = 450   ✓
-        - episode_data_index["from"][427] = 300   (same as 428, because ep 427 has length 0)
         """
+        # Skip fix for LeRobot v3.0+ which handles this differently
+        if LEROBOT_V3:
+            # v3.0 uses _absolute_to_relative_idx for episode mapping
+            # and doesn't have the same episode_data_index bug
+            return
+
         from itertools import accumulate
 
         episodes = self.dataset.episodes
@@ -335,13 +367,6 @@ class LeRobotRV(Dataset):
         # Now when LeRobotDataset.__getitem__ calls episode_data_index["from"][428],
         # it will correctly return the start index instead of throwing IndexError
         self.dataset.episode_data_index = fixed_episode_data_index
-
-        # VERIFICATION: After this fix (same as PR #1062):
-        # - episode_data_index["from"][10] returns the correct start frame for episode 10
-        # - episode_data_index["from"][428] returns the correct start frame for episode 428
-        # - episode_data_index["from"][427] returns the same as episode 428 (because ep 427 has length 0)
-        # - The validation loop in LeRobotLibero.__init__ will now pass
-        # - Training will work correctly without IndexError
 
     def __len__(self):
         return len(self.dataset)

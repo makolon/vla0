@@ -129,13 +129,39 @@ This work introduces **VLA-0** to investigate this idea. We find that VLA-0 is n
 
 ---
 
+## LeRobot Version Compatibility
+
+VLA-0 is compatible with multiple versions of LeRobot:
+
+| LeRobot Version | Codebase Version | Status |
+|-----------------|------------------|--------|
+| 0.1.0 | v2.1 | ✅ Tested (original) |
+| 0.4.x | v3.0 | ✅ Compatible |
+
+The dataloader automatically detects which version is installed and uses the appropriate APIs. Key differences between versions:
+
+- **Import paths**: v3.0 moved from `lerobot.common.datasets` to `lerobot.datasets`
+- **Episode indexing**: v3.0 uses a different approach for filtered episodes
+- **Data format**: v3.0 uses chunked parquet files instead of per-episode files
+
+To upgrade to the latest LeRobot:
+```bash
+cd libs/RoboVerse/libs/lerobot
+git fetch origin
+git checkout origin/main
+cd ../..
+pip install -e ".[lerobot]"
+```
+
+---
+
 ## Future Improvements
 
 We welcome community contributions! Some areas we have identified are:
 
 - **TensorRT-LLM Integration**: Our initial experiments suggest inference speed could be improved from 4 Hz to 6 Hz using optimized inference engines like TensorRT-LLM.
 - **Lower Precision Deployment**: Implementing quantization and lower precision inference (e.g., INT8) could provide significant speed improvements with minimal accuracy loss.
-- **LeRobot Version Compatibility**: Testing and ensuring compatibility with newer versions of LeRobot. We expect this to work with minimal changes but haven't validated it yet.
+- ~~**LeRobot Version Compatibility**: Testing and ensuring compatibility with newer versions of LeRobot.~~ ✅ **Done!** The dataloader now supports LeRobot 0.1.0 through 0.4.x.
 - **Direct LeRobot Integrations**: Make integrating with lerobot simpler and easier.
 
 ---
