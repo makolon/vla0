@@ -32,10 +32,9 @@ requirements = [
     "imageio",
     "imageio-ffmpeg==0.4.7",
     "pre-commit",  # Make sure pre-commit is included as a dependency
-    "torchvision",
     "zarr",
-    "torch",
     "matplotlib",
+    # torch, torchvision, and transformers are installed with specific versions in post-install tasks
 ]
 
 # --- Optional Requirements ---
@@ -143,10 +142,18 @@ def _run_post_install_tasks():
         subprocess.check_call(
             [sys.executable, "-m", "pip", "install", "-v", "numpy==1.26.4"]
         )
-        # Install the working version of transformers as lerobot is downgrading it to 4.21.1 which is not compatible with other requirements
-        print("\nInstalling transformers>=4.51.3...")
+        # Install specific versions of torch, torchvision, and transformers
+        print("\nInstalling torch==2.7.1...")
         subprocess.check_call(
-            [sys.executable, "-m", "pip", "install", "-v", "transformers>=4.51.3"]
+            [sys.executable, "-m", "pip", "install", "-v", "torch==2.7.1"]
+        )
+        print("\nInstalling torchvision==0.22.1...")
+        subprocess.check_call(
+            [sys.executable, "-m", "pip", "install", "-v", "torchvision==0.22.1"]
+        )
+        print("\nInstalling transformers==4.51.3...")
+        subprocess.check_call(
+            [sys.executable, "-m", "pip", "install", "-v", "transformers==4.51.3"]
         )
 
     print("\n" + "=" * 80)
