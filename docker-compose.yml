@@ -1,0 +1,29 @@
+services:
+  vla0:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      args:
+        PROJECT_DIR_NAME: vla0
+    image: vla0:latest
+    container_name: vla0
+    working_dir: /app/vla0
+    command: ["/bin/bash"]
+    stdin_open: true
+    tty: true
+    network_mode: host
+    shm_size: "16g"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: ["gpu"]
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics
+      - MUJOCO_GL=egl
+    volumes:
+      - ./:/app/vla0
+      - ${HOME}/.cache/huggingface:/root/.cache/huggingface

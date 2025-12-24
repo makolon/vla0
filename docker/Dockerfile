@@ -12,6 +12,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 # - curl: data transfer utility
 # - vim: text editor
 # - cmake: build system generator
+# - ffmpeg: video processing for datasets and evals
 # - libglib2.0-0: a core GLib library, often a dependency for software like OpenCV/CV2
 # - libgl1-mesa-glx: Mesa OpenGL/GLX runtime library, for graphics, often required by MuJoCo
 # - libosmesa6-dev: Mesa off-screen rendering development libraries, for MuJoCo headless rendering
@@ -24,6 +25,7 @@ RUN apt-get update && apt-get install -y \
     curl \
     vim \
     cmake \
+    ffmpeg \
     libglib2.0-0 \
     libgl1-mesa-glx \
     libosmesa6-dev \
@@ -33,39 +35,18 @@ RUN apt-get update && apt-get install -y \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# === Log Step 3: Install Miniconda ===
-# This step downloads the Miniconda3 installer, executes it in batch mode to install
-# Miniconda into /opt/conda, and then removes the installer script.
-RUN wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -O ~/miniconda.sh && \
-    /bin/bash ~/miniconda.sh -b -p /opt/conda && \
-    rm ~/miniconda.sh && \
-    /opt/conda/bin/conda clean -afy
-
 # === Log Step 4: Configure Environment Variables ===
 # MUJOCO_GL: Instructs MuJoCo to use EGL for rendering.
 ENV MUJOCO_GL=egl
 
-# PATH: Add Conda and CUDA to PATH.
-# This ensures /usr/local/cuda/bin (from base image) and /opt/conda/bin are prioritized.
-ENV PATH /usr/local/cuda/bin:/opt/conda/bin:$PATH
+# PATH: Add uv and CUDA to PATH.
+ENV PATH /root/.local/bin:/usr/local/cuda/bin:$PATH
 
 # LD_LIBRARY_PATH: Add MuJoCo to LD_LIBRARY_PATH.
 ENV LD_LIBRARY_PATH /root/.mujoco/mujoco210/bin${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}
 
-# === Log Step 5: Create and Activate Conda Environment ===
-# Create a Conda environment named 'test' with Python 3.10.
-# The '-y' flag auto-confirms.
-RUN conda create -n test python=3.10 -y && conda clean -afy
-
-# The order of conda init bash and echo 'conda activate test' >> /root/.bashrc is important. It ensures that the 'test' environment is activated when the user runs a bash shell.
-# conda init bash is required for conda to work in the container whenever the user runs a bash shell. It adds the conda init script to the .bashrc file.
-# echo 'conda activate test' >> /root/.bashrc is required for conda to activate the 'test' environment when the user runs a bash shell.
-RUN conda init bash
-RUN echo 'conda activate test' >> /root/.bashrc
-
-# Set the SHELL to use the 'test' conda environment for subsequent RUN commands.
-# This effectively "activates" the environment while we are installing the project dependencies. The above conda activate test takes care of the when when we run the container.
-SHELL ["conda", "run", "-n", "test", "/bin/bash", "-c"]
+# Install uv for fast, reproducible Python dependency management
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 
 # === Log Step 6 & 7: Project Setup and Installation ===
 # Argument for the project directory name. This name will be used for the
@@ -74,28 +55,25 @@ ARG PROJECT_DIR_NAME=RV-train
 # Base directory for applications within the container.
 ENV APP_DIR /app
 
-# Copy the project code into the container.
-# The build context (specified by "." in `docker build -f docker/Dockerfile .`)
-# is assumed to be the root of the "RV-train" project.
-# This command copies the entire content of the build context (current directory ".")
-# into ${APP_DIR}/${PROJECT_DIR_NAME} in the container (e.g. /app/RV-train).
-COPY . ${APP_DIR}/${PROJECT_DIR_NAME}
-
 # Set working directory to the project root inside the container.
 # This path (e.g., /app/RV-train) now contains the project files.
 WORKDIR ${APP_DIR}/${PROJECT_DIR_NAME}
 
-# Log Step 6 (continued): Install the main project package.
-# This installs the Python package located in the current directory (project root)
-# in "editable" mode (-e), with all optional dependencies ([all]).
+# Create a uv-managed virtual environment (Python 3.10) and use it by default
+ENV VIRTUAL_ENV=${APP_DIR}/${PROJECT_DIR_NAME}/.venv
+ENV PATH=${VIRTUAL_ENV}/bin:/root/.local/bin:/usr/local/cuda/bin:$PATH
+RUN uv venv --python 3.10 ${VIRTUAL_ENV}
+
+# Install all locked dependencies and the main project in editable mode
+RUN uv pip sync --python ${VIRTUAL_ENV}/bin/python uv.lock
 RUN echo "Current directory: $(pwd)" && \
-    PIP_REQ_EXTRAS=all pip install -e ".[all]"
+    uv pip install --python ${VIRTUAL_ENV}/bin/python --no-deps -e ".[all]"
 
 # Log Step 7: Install the RoboVerse library from within the project.
 # This installs the RoboVerse library, located in ./libs/RoboVerse/ relative to
 # the project root, in editable mode, with all optional dependencies.
 RUN echo "Current directory: $(pwd)" && \
-    PIP_REQ_EXTRAS=all pip install -e "./libs/RoboVerse[all]"
+    uv pip install --python ${VIRTUAL_ENV}/bin/python -e "./libs/RoboVerse[all]"
 
 # Remove .git directory to save space
 RUN rm -rf .git
@@ -105,7 +83,7 @@ RUN rm -rf ./libs/RoboVerse/.git
 # This command installs a specific pre-compiled wheel of bitsandbytes.
 # This was to resolve a GLIBC version incompatibility issue, as the
 # manylinux_2_24 wheel is compatible with older GLIBC versions like 2.31 (on Ubuntu 20.04).
-RUN pip install --force-reinstall https://github.com/bitsandbytes-foundation/bitsandbytes/releases/download/continuous-release_main/bitsandbytes-1.33.7.preview-py3-none-manylinux_2_24_x86_64.whl
+RUN uv pip install --python ${VIRTUAL_ENV}/bin/python --force-reinstall https://github.com/bitsandbytes-foundation/bitsandbytes/releases/download/continuous-release_main/bitsandbytes-1.33.7.preview-py3-none-manylinux_2_24_x86_64.whl
 
 # === Log Step 10: Configure EGL for NVIDIA ===
 # This step manually creates and configures a JSON file for NVIDIA's EGL driver.

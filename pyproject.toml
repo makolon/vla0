@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=75", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rv_train"
+version = "0.0.0"
+description = "Training and evaluation utilities for VLA-0."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [{ name = "NVIDIA" }]
+dependencies = [
+  "black==23.3.0",
+  "flake8==7.1.0",
+  "isort==5.12.0",
+  "yacs==0.1.8",
+  "tqdm",
+  "tensorboardx",
+  "einops",
+  "pre-commit",
+  "tbparse",
+]
+
+[project.optional-dependencies]
+qwen = [
+  "peft",
+  "qwen-vl-utils",
+  "bitsandbytes",
+  "hf_xet",
+]
+libero = []
+all = [
+  "peft",
+  "qwen-vl-utils",
+  "bitsandbytes",
+  "hf_xet",
+]
+
+[tool.setuptools.packages.find]
+include = ["rv_train*"]
