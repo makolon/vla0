@@ -2,7 +2,7 @@ services:
   vla0:
     build:
       context: .
-      dockerfile: docker/Dockerfile
+      dockerfile: Dockerfile
       args:
         PROJECT_DIR_NAME: vla0
     image: vla0:latest

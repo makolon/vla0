@@ -55,6 +55,9 @@ ARG PROJECT_DIR_NAME=RV-train
 # Base directory for applications within the container.
 ENV APP_DIR /app
 
+# Copy the project into the container
+COPY . ${APP_DIR}/${PROJECT_DIR_NAME}
+
 # Set working directory to the project root inside the container.
 # This path (e.g., /app/RV-train) now contains the project files.
 WORKDIR ${APP_DIR}/${PROJECT_DIR_NAME}
