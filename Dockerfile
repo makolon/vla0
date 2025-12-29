@@ -67,8 +67,8 @@ ENV VIRTUAL_ENV=${APP_DIR}/${PROJECT_DIR_NAME}/.venv
 ENV PATH=${VIRTUAL_ENV}/bin:/root/.local/bin:/usr/local/cuda/bin:$PATH
 RUN uv venv --python 3.10 ${VIRTUAL_ENV}
 
-# Install all locked dependencies and the main project in editable mode
-RUN uv pip sync --python ${VIRTUAL_ENV}/bin/python uv.lock
+# Install all locked dependencies (including extras) and the main project in editable mode
+RUN uv sync --python ${VIRTUAL_ENV}/bin/python --frozen --all-extras
 RUN echo "Current directory: $(pwd)" && \
     uv pip install --python ${VIRTUAL_ENV}/bin/python --no-deps -e ".[all]"
 
@@ -86,7 +86,9 @@ RUN rm -rf ./libs/RoboVerse/.git
 # This command installs a specific pre-compiled wheel of bitsandbytes.
 # This was to resolve a GLIBC version incompatibility issue, as the
 # manylinux_2_24 wheel is compatible with older GLIBC versions like 2.31 (on Ubuntu 20.04).
-RUN uv pip install --python ${VIRTUAL_ENV}/bin/python --force-reinstall https://github.com/bitsandbytes-foundation/bitsandbytes/releases/download/continuous-release_main/bitsandbytes-1.33.7.preview-py3-none-manylinux_2_24_x86_64.whl
+RUN UV_SKIP_WHEEL_FILENAME_CHECK=1 \
+    uv pip install --python ${VIRTUAL_ENV}/bin/python --force-reinstall \
+    https://github.com/bitsandbytes-foundation/bitsandbytes/releases/download/continuous-release_main/bitsandbytes-1.33.7.preview-py3-none-manylinux_2_24_x86_64.whl
 
 # === Log Step 10: Configure EGL for NVIDIA ===
 # This step manually creates and configures a JSON file for NVIDIA's EGL driver.

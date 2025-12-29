@@ -76,15 +76,19 @@ def get_final_le_cam_list_rv_cam_list(metadata, le_cam_list, rv_cam_list):
     """
     # Convert to tuple for caching if needed, convert back to list for compatibility
     if le_cam_list is None:
+        assert (
+            metadata is not None
+        ), "metadata is required to infer le_cam_list when it is not provided"
         le_cam_list = list(metadata.camera_keys)
     else:
         le_cam_list = (
             list(le_cam_list) if not isinstance(le_cam_list, list) else le_cam_list
         )
         print(f"le_cam_list: {le_cam_list}")
-        print(f"metadata.camera_keys: {metadata.camera_keys}")
-        for _cam in le_cam_list:
-            assert _cam in metadata.camera_keys, f"Camera {_cam} not found in metadata"
+        if metadata is not None:
+            print(f"metadata.camera_keys: {metadata.camera_keys}")
+            for _cam in le_cam_list:
+                assert _cam in metadata.camera_keys, f"Camera {_cam} not found in metadata"
 
     if rv_cam_list is None:
         rv_cam_list = c.CAMERA_NAMES[: len(le_cam_list)]
@@ -136,7 +140,9 @@ def le_sample_to_rv_sample(
     :return: (dict) A sample in RV dataset
     """
     rv_sample = {}
-    metadata = get_lerobot_metadata(repo_id)
+    metadata = None
+    if le_cam_list is None or rv_cam_list is None:
+        metadata = get_lerobot_metadata(repo_id)
     le_cam_list, _ = get_final_le_cam_list_rv_cam_list(
         metadata, le_cam_list, rv_cam_list
     )

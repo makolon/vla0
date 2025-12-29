@@ -6,6 +6,8 @@ datasets: [lerobot]
 
 LEROBOT:
   repo_id: physical-intelligence/libero
+  le_cam_list: [image, wrist_image]
+  rv_cam_list: [3p1, 3p2]
   action_key: actions
   state_key: state
 
