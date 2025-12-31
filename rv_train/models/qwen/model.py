@@ -100,6 +100,8 @@ class QwenActor(nn.Module):
         action_mask_aug=0,
         action_mask_aug_per=0.1,
         attention_dropout=0.0,
+        use_unsloth=False,
+        unsloth_max_seq_len=8192,
     ):
         """
         :param qwen_model_id: str, the id of the qwen model to use
@@ -158,8 +160,11 @@ class QwenActor(nn.Module):
         self.use_flash_attention_2 = use_flash_attention_2
         self.action_mask_aug_per = action_mask_aug_per
         self.attention_dropout = attention_dropout
+        self.use_unsloth = use_unsloth
+        self.unsloth_max_seq_len = unsloth_max_seq_len
+        self._unsloth_tokenizer = None
 
-        self.model = self.load_qwen_model(
+        self.model, self._unsloth_tokenizer = self.load_qwen_model(
             qwen_model_id=self.qwen_model_id,
             use_lora=self.use_lora,
             use_qlora=self.use_qlora,
@@ -167,6 +172,8 @@ class QwenActor(nn.Module):
             lora_rank=self.lora_rank,
             use_flash_attention_2=self.use_flash_attention_2,
             attention_dropout=self.attention_dropout,
+            use_unsloth=self.use_unsloth,
+            unsloth_max_seq_len=self.unsloth_max_seq_len,
         )
 
         # Enable gradient checkpointing if requested
@@ -182,6 +189,7 @@ class QwenActor(nn.Module):
             min_pixel=self.min_pixel,
             max_pixel=self.max_pixel,
             padding_side="left" if use_flash_attention_2 else None,
+            tokenizer_override=self._unsloth_tokenizer,
         )
         self.logits_processor = NumberSpaceOnlyProcessor(self.processor.tokenizer)
 
@@ -235,7 +243,73 @@ class QwenActor(nn.Module):
         lora_rank,
         use_flash_attention_2,
         attention_dropout,
+        use_unsloth,
+        unsloth_max_seq_len,
     ):
+        # Try Unsloth fast loader when requested
+        if use_unsloth:
+            try:
+                # Patch unsloth_zoo globals before FastLanguageModel import to avoid NameError on dist
+                import importlib
+                import sys
+                import torch.distributed as dist
+
+                def _patched_distributed_function(n=1, function=None, *args, **kwargs):
+                    assert function is not None
+                    if not dist.is_initialized():
+                        out = function(*args, **kwargs)
+                        return out if n == 1 else out
+                    if dist.get_rank() == 0:
+                        out = function(*args, **kwargs)
+                        obj_list = [out] if n == 1 else list(out)
+                    else:
+                        obj_list = [None for _ in range(n)]
+                    dist.broadcast_object_list(obj_list, src=0)
+                    dist.barrier()
+                    return obj_list[0] if n == 1 else obj_list
+
+                try:
+                    uz = importlib.import_module("unsloth_zoo.utils")
+                    uz.dist = dist
+                    uz.distributed_function = _patched_distributed_function
+                except Exception:
+                    uz = None
+
+                try:
+                    comp = importlib.import_module("unsloth_zoo.compiler")
+                    comp.dist = dist
+                    comp.distributed_function = _patched_distributed_function
+                except Exception:
+                    pass
+
+                from unsloth import FastLanguageModel  # Load Unsloth after patching
+            except ImportError as exc:
+                raise ImportError(
+                    "Unsloth is not installed. Either install the `unsloth` package or set MODEL.QWEN.use_unsloth=False."
+                ) from exc
+
+            try:
+                model, tokenizer = FastLanguageModel.from_pretrained(
+                    qwen_model_id,
+                    max_seq_length=unsloth_max_seq_len,
+                    load_in_4bit=use_qlora,
+                    dtype=torch.bfloat16,
+                )
+                if use_lora:
+                    model = FastLanguageModel.get_peft_model(
+                        model,
+                        r=lora_rank,
+                        target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
+                        lora_alpha=16,
+                        lora_dropout=0.05,
+                        bias="none",
+                    )
+                return model, tokenizer
+            except Exception as exc:  # pragma: no cover - runtime guard
+                warnings.warn(
+                    f"Unsloth path failed, falling back to the standard HF loader. Error: {exc}"
+                )
+
         if lora_config == "":
             lora_config = None
         elif lora_config == "default":
@@ -285,7 +359,7 @@ class QwenActor(nn.Module):
         if use_lora and (lora_config is not None):
             model = get_peft_model(model, lora_config)
 
-        return model
+        return model, None
 
     @staticmethod
     def load_qwen_model_processor(
@@ -293,6 +367,7 @@ class QwenActor(nn.Module):
         min_pixel,
         max_pixel,
         padding_side,
+        tokenizer_override=None,
     ):
         if padding_side is not None:
             processor = Qwen2_5_VLProcessor.from_pretrained(
@@ -307,6 +382,9 @@ class QwenActor(nn.Module):
                 min_pixels=min_pixel,
                 max_pixels=max_pixel,
             )
+
+        if tokenizer_override is not None:
+            processor.tokenizer = tokenizer_override
 
         return processor
 
@@ -843,7 +921,9 @@ class QwenActor(nn.Module):
                 lora_rank=self.lora_rank,  # Doesn't matter here as lora_config is None
                 use_flash_attention_2=self.use_flash_attention_2,
                 attention_dropout=self.attention_dropout,
-            )
+                use_unsloth=self.use_unsloth,
+                unsloth_max_seq_len=self.unsloth_max_seq_len,
+            )[0]
 
             self.model = PeftModel.from_pretrained(
                 base_model,
