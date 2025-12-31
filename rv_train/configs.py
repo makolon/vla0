@@ -87,6 +87,8 @@ _C.MODEL.QWEN.num_bins_actions = 1000
 _C.MODEL.QWEN.use_flash_attention_2 = False
 _C.MODEL.QWEN.action_mask_aug_per = 0.1
 _C.MODEL.QWEN.attention_dropout = 0.0
+_C.MODEL.QWEN.use_unsloth = True
+_C.MODEL.QWEN.unsloth_max_seq_len = 8192
 
 
 def get_cfg_defaults():

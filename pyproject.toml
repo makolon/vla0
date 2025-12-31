@@ -20,6 +20,9 @@ dependencies = [
   "einops",
   "pre-commit",
   "tbparse",
+  "unsloth>=2025.12.9",
+  "lerobot>=0.4.2",
+  "qwen-vl-utils",
 ]
 
 [project.optional-dependencies]
@@ -39,3 +42,6 @@ all = [
 
 [tool.setuptools.packages.find]
 include = ["rv_train*"]
+
+[tool.uv.sources]
+qwen-vl-utils = { git = "https://github.com/kq-chen/qwen-vl-utils.git" }

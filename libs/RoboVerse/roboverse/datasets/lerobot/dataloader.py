@@ -4,16 +4,26 @@
 
 # Suppress unnnecessary warnings
 import logging
+import os
 import warnings
 from functools import cache
+from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import torch
 from einops import rearrange
 from roboverse import constants as c
 from torch.utils.data import Dataset
 
 from rv_train.utils.train_utils import ForkedPdb as debug  # noqa: F401
+
+# Ensure LeRobot/HF caches live inside the workspace (writable) instead of /root.
+_workspace_cache = Path(__file__).resolve().parent.parent.parent.parent / ".cache"
+_default_hf_home = _workspace_cache / "huggingface"
+_default_hf_lerobot_home = _workspace_cache / "lerobot"
+os.environ["HF_HOME"] = str(_default_hf_home)
+os.environ["HF_LEROBOT_HOME"] = str(_default_hf_lerobot_home)
 
 logging.getLogger().setLevel(logging.ERROR)
 warnings.filterwarnings("ignore")
@@ -23,16 +33,13 @@ warnings.filterwarnings("ignore")
 # LeRobot v0.4.x (codebase v3.0): lerobot.datasets.lerobot_dataset
 try:
     # Try new import path first (LeRobot >= 0.4.0, codebase v3.0)
-    from lerobot.datasets.lerobot_dataset import (LeRobotDataset,
-                                                  LeRobotDatasetMetadata,
-                                                  MultiLeRobotDataset)
-
+    from lerobot.datasets.lerobot_dataset import (
+        LeRobotDataset, LeRobotDatasetMetadata, MultiLeRobotDataset)
     LEROBOT_V3 = True
 except ImportError:
     # Fall back to old import path (LeRobot 0.1.0, codebase v2.1)
     from lerobot.common.datasets.lerobot_dataset import (
         LeRobotDataset, LeRobotDatasetMetadata, MultiLeRobotDataset)
-
     LEROBOT_V3 = False
 
 
@@ -53,6 +60,13 @@ def is_lerobot_v3():
 
 print(f"LeRobot version: {get_lerobot_version()}, using v3.0 API: {LEROBOT_V3}")
 
+# Ensure LeRobot/HF caches live inside the workspace (writable) instead of /root.
+_workspace_cache = Path(__file__).resolve().parent.parent.parent.parent / ".cache"
+_default_hf_home = _workspace_cache / "huggingface"
+_default_hf_lerobot_home = _workspace_cache / "lerobot"
+os.environ["HF_HOME"] = str(_default_hf_home)
+os.environ["HF_LEROBOT_HOME"] = str(_default_hf_lerobot_home)
+
 
 @cache
 def get_lerobot_metadata(repo_id):
@@ -61,7 +75,140 @@ def get_lerobot_metadata(repo_id):
     :param repo_id: (str) Repository ID from huggingface to load the dataset
     :return: (dict) Metadata for the dataset
     """
-    return LeRobotDatasetMetadata(repo_id=repo_id)
+    try:
+        return LeRobotDatasetMetadata(repo_id=repo_id)
+    except Exception as exc:  # noqa: BLE001 - broad guard to apply fallback
+        # Fall back to a permissive loader for older / untagged datasets (e.g., physical-intelligence/libero)
+        # by temporarily disabling strict version checks and forcing a metadata sync from "main".
+        from huggingface_hub import snapshot_download
+        from lerobot.datasets import lerobot_dataset as le_ds
+        from lerobot.datasets import utils as le_utils
+
+        print(
+            f"WARNING: LeRobot metadata load failed for '{repo_id}' ({exc}). "
+            "Retrying with relaxed version checking and revision='main'."
+        )
+        # Disable version checks in both utils and the already-imported lerobot_dataset module
+        original_check_utils = le_utils.check_version_compatibility
+        original_check_ds = le_ds.check_version_compatibility
+        le_utils.check_version_compatibility = lambda *args, **kwargs: None
+        le_ds.check_version_compatibility = lambda *args, **kwargs: None
+        try:
+            local_dir = Path(os.environ["HF_LEROBOT_HOME"]) / repo_id
+            # Proactively fetch meta files in case the repo is missing version tags
+            try:
+                snapshot_download(
+                    repo_id=repo_id,
+                    repo_type="dataset",
+                    revision="main",
+                    local_dir=local_dir,
+                    local_dir_use_symlinks=False,
+                    allow_patterns=[
+                        "meta/*",
+                        "meta/**",
+                        "**info.json",
+                        "**stats.json",
+                        "**tasks.*",
+                        "**episodes*",
+                    ],
+                )
+            except Exception as dl_exc:  # noqa: BLE001 - logging only
+                print(
+                    f"WARNING: snapshot_download for '{repo_id}' (revision=main) failed during fallback: {dl_exc}"
+                )
+                # Even if download fails, continue to attempt loading if cached files exist
+
+            # Convert legacy jsonl metadata to parquet if needed
+            tasks_parquet = local_dir / le_utils.DEFAULT_TASKS_PATH
+            tasks_jsonl = local_dir / le_utils.LEGACY_TASKS_PATH
+            if not tasks_parquet.exists() and tasks_jsonl.exists():
+                try:
+                    df_tasks = pd.read_json(tasks_jsonl, lines=True)
+                    tasks_parquet.parent.mkdir(parents=True, exist_ok=True)
+                    df_tasks.to_parquet(tasks_parquet)
+                    print(f"Converted legacy tasks.jsonl to {tasks_parquet}")
+                except Exception as conv_exc:  # noqa: BLE001 - logging only
+                    print(
+                        f"WARNING: Failed to convert tasks.jsonl -> parquet: {conv_exc}"
+                    )
+
+            episodes_parquet = local_dir / le_utils.DEFAULT_EPISODES_PATH.format(
+                chunk_index=0, file_index=0
+            )
+            episodes_jsonl = local_dir / le_utils.LEGACY_EPISODES_PATH
+            if not episodes_parquet.exists() and episodes_jsonl.exists():
+                try:
+                    df_eps = pd.read_json(episodes_jsonl, lines=True)
+                    episodes_parquet.parent.mkdir(parents=True, exist_ok=True)
+                    df_eps.to_parquet(episodes_parquet)
+                    print(f"Converted legacy episodes.jsonl to {episodes_parquet}")
+                except Exception as conv_exc:  # noqa: BLE001 - logging only
+                    print(
+                        f"WARNING: Failed to convert episodes.jsonl -> parquet: {conv_exc}"
+                    )
+
+            return LeRobotDatasetMetadata(
+                repo_id=repo_id,
+                revision="main",
+                force_cache_sync=True,
+                root=local_dir,
+            )
+        finally:
+            le_utils.check_version_compatibility = original_check_utils
+            le_ds.check_version_compatibility = original_check_ds
+
+
+def ensure_lerobot_metadata_files(repo_id):
+    """
+    Ensure that meta files exist in the local cache and convert legacy jsonl to parquet.
+    """
+    from huggingface_hub import snapshot_download
+    from lerobot.datasets import utils as le_utils
+
+    local_dir = Path(os.environ["HF_LEROBOT_HOME"]) / repo_id
+    # pull meta files if missing
+    try:
+        snapshot_download(
+            repo_id=repo_id,
+            repo_type="dataset",
+            revision="main",
+            local_dir=local_dir,
+            local_dir_use_symlinks=False,
+            allow_patterns=[
+                "meta/*",
+                "meta/**",
+                "**info.json",
+                "**stats.json",
+                "**tasks.*",
+                "**episodes*",
+            ],
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"WARNING: metadata snapshot_download failed for '{repo_id}': {exc}")
+
+    tasks_parquet = local_dir / le_utils.DEFAULT_TASKS_PATH
+    tasks_jsonl = local_dir / le_utils.LEGACY_TASKS_PATH
+    if not tasks_parquet.exists() and tasks_jsonl.exists():
+        try:
+            df_tasks = pd.read_json(tasks_jsonl, lines=True)
+            tasks_parquet.parent.mkdir(parents=True, exist_ok=True)
+            df_tasks.to_parquet(tasks_parquet)
+            print(f"Converted legacy tasks.jsonl to {tasks_parquet}")
+        except Exception as conv_exc:  # noqa: BLE001
+            print(f"WARNING: Failed to convert tasks.jsonl -> parquet: {conv_exc}")
+
+    episodes_parquet = local_dir / le_utils.DEFAULT_EPISODES_PATH.format(
+        chunk_index=0, file_index=0
+    )
+    episodes_jsonl = local_dir / le_utils.LEGACY_EPISODES_PATH
+    if not episodes_parquet.exists() and episodes_jsonl.exists():
+        try:
+            df_eps = pd.read_json(episodes_jsonl, lines=True)
+            episodes_parquet.parent.mkdir(parents=True, exist_ok=True)
+            df_eps.to_parquet(episodes_parquet)
+            print(f"Converted legacy episodes.jsonl to {episodes_parquet}")
+        except Exception as conv_exc:  # noqa: BLE001
+            print(f"WARNING: Failed to convert episodes.jsonl -> parquet: {conv_exc}")
 
 
 def get_final_le_cam_list_rv_cam_list(metadata, le_cam_list, rv_cam_list):
@@ -222,6 +369,7 @@ class LeRobotRV(Dataset):
                 ), "Remove noop actions is only supported for hugohadfieldnvidia datasets. For other dataset, make sure the condition for removing noop actions is met. Identifying noop condition is defined in the __getitem__ function."
 
         # get metadata
+        ensure_lerobot_metadata_files(self.repo_id[0])
         metadata = get_lerobot_metadata(self.repo_id[0])
 
         # set action and state keys
@@ -269,19 +417,43 @@ class LeRobotRV(Dataset):
             # loads camera frames from -history+1 to 0
             delta_timestamps[cam] = [-x / fps for x in range(history - 1, -1, -1)]
 
+        # Relax version compatibility checks for legacy/untagged datasets
+        # (e.g., physical-intelligence/libero) to avoid NotImplementedError during init.
+        try:
+            import lerobot.datasets.lerobot_dataset as le_ds
+            import lerobot.datasets.utils as le_utils
+
+            original_check_utils = le_utils.check_version_compatibility
+            original_check_ds = le_ds.check_version_compatibility
+            le_utils.check_version_compatibility = lambda *args, **kwargs: None
+            le_ds.check_version_compatibility = lambda *args, **kwargs: None
+        except Exception:
+            original_check_utils = None
+            original_check_ds = None
+
         if len(repo_id) > 1:
             print(f"Loading MultiLeRobotDataset with repo_ids: {self.repo_id}")
             self.dataset = MultiLeRobotDataset(
                 repo_ids=self.repo_id,
                 delta_timestamps=delta_timestamps,
                 episodes=episodes,
+                revision="main",
+                force_cache_sync=True,
             )
         else:
             self.dataset = LeRobotDataset(
                 repo_id=self.repo_id[0],
                 delta_timestamps=delta_timestamps,
                 episodes=episodes,
+                revision="main",
+                force_cache_sync=True,
             )
+
+        # restore check_version_compatibility to avoid side effects
+        if original_check_utils is not None:
+            le_utils.check_version_compatibility = original_check_utils
+        if original_check_ds is not None:
+            le_ds.check_version_compatibility = original_check_ds
 
         # CRITICAL FIX: Handle episode indexing bug in LeRobotDataset when episodes are filtered
         # This uses the same approach as PR #1062: https://github.com/huggingface/lerobot/pull/1062/files
@@ -428,16 +600,3 @@ if __name__ == "__main__":
     print(f"Sample keys: {sample.keys()}")
     print(f"LeRobot Dataset keys: {dataset.dataset[0].keys()}")
     breakpoint()
-
-    # for libero
-    # print(f"dataset state: {dataset.dataset[0].get('state').shape}")
-    # print(f"dataset actions: {dataset.dataset[0].get('actions').shape}")
-    # print(f"dataset image: {dataset.dataset[0].get('image').shape}")
-    # print(f"dataset wrist_image: {dataset.dataset[0].get('wrist_image').shape}")
-
-    # sample = dataset.__getitem__(idx=0)
-    # print(f"sample.keys(): {sample.keys()}")
-    # print(f"state: {sample.get('state').shape}")
-    # print(f"actions: {sample.get('actions').shape}")
-    # print(f"image: {sample.get('image').shape}")
-    # print(f"wrist_image: {sample.get('wrist_image').shape}")
